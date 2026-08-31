@@ -1,12 +1,14 @@
-name: Spider Jar Gen
+name: Build Spider Jar
+
+permissions:
+  contents: write
 
 on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Branch to build'
-        required: true
-        default: 'main'
+  workflow_dispatch:      # 手动触发
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 0 * * *'   # 每天自动构建一次（不需要可删除）
 
 jobs:
   build:
@@ -16,69 +18,98 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
 
-      - name: Set up JDK
+      - name: Set up JDK 18
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '18'
           distribution: 'temurin'
 
       - name: Clone FongMi CatVodSpider
         run: |
           rm -rf project
-          rm -rf jar/custom_spider.jar
-          git clone --recurse-submodules https://github.com/FongMi/CatVodSpider project
+          rm -f jar/custom_spider.jar
+          git clone --depth=1 --recurse-submodules https://github.com/FongMi/CatVodSpider project
 
-      - name: Customize Spider
+      - name: Customize (可选修改)
         working-directory: ./project
         run: |
-          sed -i 's/gradle-7.4.2-all/gradle-7.5-bin/g' gradle/wrapper/gradle-wrapper.properties
-          # 在这里添加你的自定义修改
+          # 示例：修改 Gradle 版本，按需打开
+          # sed -i 's/gradle-7.4.2-all/gradle-7.5-bin/g' gradle/wrapper/gradle-wrapper.properties
 
       - name: Build with Gradle
         working-directory: ./project
         run: |
           chmod +x gradlew
-          ./gradlew assemblerelease --build-cache --parallel --daemon --quiet
+          ./gradlew assemblerelease --build-cache --parallel --daemon
 
-      - name: Prepare Tools
-        run: |
-          mkdir -p jar/3rd
-          curl -sL -o jar/3rd/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
-          curl -sL -o jar/3rd/baksmali.jar https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar
-
-      - name: Build Spider Jar
+      - name: Build Spider Jar (Apktool)
         working-directory: ./project
         run: |
           rm -rf jar/custom_spider.jar
           rm -rf jar/spider.jar/original/META-INF
+          rm -rf jar/Smali_classes
 
-          # baksmali: dex -> smali
-          java -jar ../jar/3rd/baksmali.jar d             app/build/intermediates/dex/release/minifyReleaseWithR8/classes.dex             -o jar/Smali_classes
+          # 下载工具（如果仓库里已自带 jar/3rd/ 目录，可注释掉 curl）
+          mkdir -p jar/3rd
+          if [ ! -f "jar/3rd/apktool_2.7.0.jar" ]; then
+            curl -sL https://github.com/iBotPeaches/Apktool/releases/download/v2.7.0/apktool_2.7.0.jar > jar/3rd/apktool_2.7.0.jar
+          fi
+          if [ ! -f "jar/3rd/baksmali-2.5.2.jar" ]; then
+            curl -sL https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar > jar/3rd/baksmali-2.5.2.jar
+          fi
 
-          # 重组 smali 到 spider.jar 模板
+          # 1. dex → smali
+          java -jar jar/3rd/baksmali-2.5.2.jar d \
+            app/build/intermediates/dex/release/minifyReleaseWithR8/classes.dex \
+            -o jar/Smali_classes
+
+          # 2. 重组到 spider.jar 模板
           mkdir -p jar/spider.jar/smali/com/github/catvod/
           mv jar/Smali_classes/com/github/catvod/spider jar/spider.jar/smali/com/github/catvod/
 
-          # apktool: smali -> dex.jar
-          java -jar ../jar/3rd/apktool.jar b jar/spider.jar -c
+          # 3. apktool 打包成 dex.jar
+          java -jar jar/3rd/apktool_2.7.0.jar b jar/spider.jar -c
+
+          # 4. 移回仓库根目录的 jar/
           mv jar/spider.jar/dist/dex.jar ../jar/custom_spider.jar
 
-          # 生成 MD5
-          md5=$(md5sum ../jar/custom_spider.jar | awk '{print $1}')
-          echo "$md5" > ../jar/custom_spider.jar.md5
+      - name: Add MANIFEST.MF
+        run: |
+          cd jar
+          mkdir -p META-INF
+          cat > META-INF/MANIFEST.MF << 'EOF'
+Manifest-Version: 1.0
+Created-By: GitHub Actions
+EOF
+          # -u 追加，不会破坏 classes.dex
+          zip -u custom_spider.jar META-INF/MANIFEST.MF
+          rm -rf META-INF
+
+      - name: Generate MD5
+        run: |
+          md5=($(md5sum jar/custom_spider.jar))
+          echo "$md5" > jar/custom_spider.jar.md5
           echo "MD5: $md5"
+
+      - name: Verify Jar Content
+        run: |
+          echo "=== Jar 内部文件 ==="
+          unzip -l jar/custom_spider.jar
+          echo ""
+          echo "=== MANIFEST.MF 内容 ==="
+          unzip -p jar/custom_spider.jar META-INF/MANIFEST.MF
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: custom_spider
+          name: spider-jar
           path: |
-            ./jar/custom_spider.jar
-            ./jar/custom_spider.jar.md5
+            jar/custom_spider.jar
+            jar/custom_spider.jar.md5
 
-      - name: Commit and Push
+      - name: Commit & Push
         uses: EndBug/add-and-commit@v9
         with:
           default_author: github_actions
