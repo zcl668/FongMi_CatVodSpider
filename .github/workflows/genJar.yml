@@ -4,11 +4,9 @@ permissions:
   contents: write
 
 on:
-  workflow_dispatch:      # 手动触发
+  workflow_dispatch:
   push:
     branches: [main, master]
-  schedule:
-    - cron: '0 0 * * *'   # 每天自动构建一次（不需要可删除）
 
 jobs:
   build:
@@ -32,12 +30,6 @@ jobs:
           rm -f jar/custom_spider.jar
           git clone --depth=1 --recurse-submodules https://github.com/FongMi/CatVodSpider project
 
-      - name: Customize (可选修改)
-        working-directory: ./project
-        run: |
-          # 示例：修改 Gradle 版本，按需打开
-          # sed -i 's/gradle-7.4.2-all/gradle-7.5-bin/g' gradle/wrapper/gradle-wrapper.properties
-
       - name: Build with Gradle
         working-directory: ./project
         run: |
@@ -47,11 +39,8 @@ jobs:
       - name: Build Spider Jar (Apktool)
         working-directory: ./project
         run: |
-          rm -rf jar/custom_spider.jar
+          rm -rf jar/custom_spider.jar jar/Smali_classes
           rm -rf jar/spider.jar/original/META-INF
-          rm -rf jar/Smali_classes
-
-          # 下载工具（如果仓库里已自带 jar/3rd/ 目录，可注释掉 curl）
           mkdir -p jar/3rd
           if [ ! -f "jar/3rd/apktool_2.7.0.jar" ]; then
             curl -sL https://github.com/iBotPeaches/Apktool/releases/download/v2.7.0/apktool_2.7.0.jar > jar/3rd/apktool_2.7.0.jar
@@ -59,31 +48,19 @@ jobs:
           if [ ! -f "jar/3rd/baksmali-2.5.2.jar" ]; then
             curl -sL https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar > jar/3rd/baksmali-2.5.2.jar
           fi
-
-          # 1. dex → smali
           java -jar jar/3rd/baksmali-2.5.2.jar d \
             app/build/intermediates/dex/release/minifyReleaseWithR8/classes.dex \
             -o jar/Smali_classes
-
-          # 2. 重组到 spider.jar 模板
           mkdir -p jar/spider.jar/smali/com/github/catvod/
           mv jar/Smali_classes/com/github/catvod/spider jar/spider.jar/smali/com/github/catvod/
-
-          # 3. apktool 打包成 dex.jar
           java -jar jar/3rd/apktool_2.7.0.jar b jar/spider.jar -c
-
-          # 4. 移回仓库根目录的 jar/
           mv jar/spider.jar/dist/dex.jar ../jar/custom_spider.jar
 
       - name: Add MANIFEST.MF
         run: |
           cd jar
           mkdir -p META-INF
-          cat > META-INF/MANIFEST.MF << 'EOF'
-Manifest-Version: 1.0
-Created-By: GitHub Actions
-EOF
-          # -u 追加，不会破坏 classes.dex
+          printf "Manifest-Version: 1.0\nCreated-By: GitHub Actions\n" > META-INF/MANIFEST.MF
           zip -u custom_spider.jar META-INF/MANIFEST.MF
           rm -rf META-INF
 
